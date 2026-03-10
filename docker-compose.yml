@@ -1,0 +1,32 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: deadresult
+      POSTGRES_PASSWORD: deadresult
+      POSTGRES_DB: deadresult
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U deadresult"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    ports:
+      - "8100:8000"
+    environment:
+      DEADRESULT_DATABASE_URL: postgresql+asyncpg://deadresult:deadresult@db:5432/deadresult
+      DEADRESULT_DATABASE_URL_SYNC: postgresql://deadresult:deadresult@db:5432/deadresult
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head && uvicorn deadresult.api.app:app --host 0.0.0.0 --port 8000"
+
+volumes:
+  pgdata:
