@@ -185,85 +185,85 @@ curl -X POST http://localhost:8000/v1/export/request \
 curl http://localhost:8000/v1/export/latest
 ```
 
-## AWS Deployment
+## Deployment
 
-DeadResult deploys to AWS Lambda (via Mangum) + RDS PostgreSQL + API Gateway using AWS SAM.
+DeadResult has two deployment paths: local Docker for development, and AWS Lambda for production.
 
-### Prerequisites
-
-- [AWS CLI](https://aws.amazon.com/cli/) configured with credentials
-- [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)
-- An ACM certificate in us-east-1 for `deadresult.agentpier.org` (optional, for custom domain)
-
-### First deploy
+### Local development
 
 ```bash
-# Set your RDS password
-export DB_PASSWORD="your-secure-password-here"
-
-# Deploy (first time — interactive guided setup)
-./deploy.sh
+docker compose up -d
 ```
 
-The guided deploy will prompt for stack name, region, and parameter overrides. Key parameters:
+Starts the API on port 8100 and PostgreSQL (pgvector) on port 5433. Migrations run automatically.
 
-| Parameter | Description |
-|---|---|
-| `Stage` | `dev` or `prod` |
-| `DBPassword` | RDS master password |
-| `CertificateArn` | ACM cert ARN (optional — enables custom domain) |
-| `DomainName` | Custom domain (default: `deadresult.agentpier.org`) |
+### AWS deployment
 
-### Subsequent deploys
+Deploys via GitHub Actions CI/CD on push to `main`, or manually from your machine.
+
+**Architecture:** Individual Lambda functions per endpoint → API Gateway REST API → RDS PostgreSQL (pgvector) in a private VPC.
+
+```
+Client → API Gateway REST API → Lambda (per endpoint)
+                                      ↓
+                                 RDS PostgreSQL (pgvector)
+                                      ↑
+                                 S3 (bulk exports)
+```
+
+#### CI/CD (automatic)
+
+Push to `main` triggers `.github/workflows/deploy-dev.yml`:
+1. `sam build` — packages Lambda functions
+2. `sam deploy` — deploys CloudFormation stack
+3. Smoke test — hits `/health` endpoint
+
+Required GitHub secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `DB_PASSWORD`.
+
+#### Manual deploy
 
 ```bash
-export DB_PASSWORD="your-password"
-./deploy.sh
+DB_PASSWORD=your-secure-password ./deploy-local.sh dev
 ```
 
-### What gets created
+#### What gets created
 
-- **Lambda** — Python 3.12, 512MB, 30s timeout, Mangum handler wrapping FastAPI
-- **API Gateway** — HTTP API with proxy integration
-- **RDS** — PostgreSQL 16 (db.t3.micro, 20GB) with pgvector in a private VPC
+- **8 Lambda functions** — one per endpoint (health, submit, get, search, similar, stats, export-request, export-latest)
+- **API Gateway** — REST API with CORS
+- **RDS** — PostgreSQL 16 (db.t4g.micro, 20GB, pgvector) in a private VPC
 - **S3** — Bucket for bulk catalog exports (30-day lifecycle)
 - **VPC** — Private subnets for Lambda/RDS, NAT gateway for outbound access
-- **Custom domain** (optional) — API Gateway domain mapping for `deadresult.agentpier.org`
 
-### pgvector setup
+#### pgvector setup
 
-After the first deploy, connect to the RDS instance and enable pgvector:
+After the first deploy, connect to RDS and enable pgvector:
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
-The Alembic migration (`001_initial.py`) includes this, so `deploy.sh` handles it automatically via `alembic upgrade head`.
-
-### Architecture
-
-```
-Client → API Gateway HTTP API → Lambda (Mangum + FastAPI)
-                                    ↓
-                               RDS PostgreSQL (pgvector)
-                                    ↑
-                               S3 (bulk exports)
-```
+Then run Alembic migrations to create the schema.
 
 ## Project Structure
 
 ```
-deadresult/
-  api/           — FastAPI application, routes, and Lambda handler
-  models/        — SQLAlchemy ORM models (Experiment)
-  schemas/       — Pydantic request/response schemas
-  services/      — Business logic (search, similarity, submission, stats, export)
-  plugin/        — Autoresearch integration plugin
-  cli/           — Click-based CLI tool
-migrations/      — Alembic database migrations
-tests/           — pytest test suite
-template.yaml    — AWS SAM template
-deploy.sh        — Deployment script
+deadresult/          — Python package (pip install, local dev, CLI)
+  api/               — FastAPI application, routes, Lambda handler (Mangum)
+  models/            — SQLAlchemy ORM models (Experiment)
+  schemas/           — Pydantic request/response schemas
+  services/          — Business logic (search, similarity, export)
+  plugin/            — Autoresearch integration plugin
+  cli/               — Click-based CLI tool
+src/                 — AWS Lambda deployment code
+  handlers/          — Individual Lambda handler per endpoint
+  lib/               — Shared code (db, models, schemas, response helpers)
+infra/
+  template.yaml      — AWS SAM template (VPC, RDS, API Gateway, 8 Lambdas)
+migrations/          — Alembic database migrations
+tests/               — pytest test suite
+.github/workflows/   — CI (pytest) and deploy (SAM) pipelines
+samconfig.toml       — SAM deploy configuration
+deploy-local.sh      — Manual deploy script
 docker-compose.yml
 pyproject.toml
 ```

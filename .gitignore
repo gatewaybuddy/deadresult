@@ -7,3 +7,6 @@ build/
 .pytest_cache/
 .ruff_cache/
 *.db
+.aws-sam/
+__pycache__/
+*.pyc

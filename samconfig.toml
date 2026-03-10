@@ -1,0 +1,28 @@
+version = 0.1
+
+[default.global.parameters]
+stack_name = "deadresult-dev"
+
+[dev]
+[dev.deploy]
+[dev.deploy.parameters]
+stack_name = "deadresult-dev"
+s3_bucket = "aws-sam-cli-managed-default-samclisourcebucket-agentpier"
+s3_prefix = "deadresult-dev"
+region = "us-east-1"
+confirm_changeset = false
+capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
+template_file = "infra/template.yaml"
+parameter_overrides = "Stage=dev"
+
+[prod]
+[prod.deploy]
+[prod.deploy.parameters]
+stack_name = "deadresult-prod"
+s3_bucket = "aws-sam-cli-managed-default-samclisourcebucket-agentpier"
+s3_prefix = "deadresult-prod"
+region = "us-east-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
+template_file = "infra/template.yaml"
+parameter_overrides = "Stage=prod"

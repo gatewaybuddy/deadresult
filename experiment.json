@@ -1,0 +1,26 @@
+{
+  "hypothesis": "Cosine annealing with warm restarts improves convergence on small transformer models (depth 4, TinyStories)",
+  "approach": {
+    "method": "cosine_annealing_warm_restarts",
+    "description": "Applied cosine annealing learning rate scheduler with warm restarts to a 4-layer transformer trained on TinyStories dataset. Compared against standard linear decay baseline.",
+    "implementation": "PyTorch CosineAnnealingWarmRestarts scheduler",
+    "model_architecture": "4-layer transformer"
+  },
+  "architecture": "transformer",
+  "dataset": {
+    "name": "TinyStories",
+    "size": "small",
+    "domain": "children_stories"
+  },
+  "status": "failed",
+  "tags": ["learning_rate", "cosine_annealing", "small_model"],
+  "notes": "Warm restarts caused instability in models under 10M params. Loss oscillated without converging. Standard linear decay performed 12% better on val_bpb.",
+  "results": {
+    "status": "failed",
+    "final_loss": 2.85,
+    "baseline_loss": 2.51,
+    "convergence": "false",
+    "training_time_hours": 2.5,
+    "performance_degradation": "12% worse than linear decay"
+  }
+}

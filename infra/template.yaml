@@ -1,0 +1,506 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: DeadResult — Searchable catalog of failed AI research experiments (individual Lambda handlers)
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+    Runtime: python3.12
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Description: Password for the RDS PostgreSQL instance
+    MinLength: 8
+
+Conditions:
+  IsProduction: !Equals [!Ref Stage, prod]
+
+Resources:
+
+  # ============================================
+  # VPC Configuration
+  # ============================================
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.1.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub deadresult-vpc-${Stage}
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.1.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: !Sub deadresult-private-1-${Stage}
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.1.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: !Sub deadresult-private-2-${Stage}
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.1.3.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub deadresult-public-1-${Stage}
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.1.4.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub deadresult-public-2-${Stage}
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub deadresult-igw-${Stage}
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub deadresult-public-rt-${Stage}
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  NATGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: !Sub deadresult-nat-${Stage}
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub deadresult-private-rt-${Stage}
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  # ============================================
+  # Security Groups
+  # ============================================
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub deadresult-lambda-sg-${Stage}
+      GroupDescription: Security group for DeadResult Lambda functions
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub deadresult-lambda-sg-${Stage}
+
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub deadresult-rds-sg-${Stage}
+      GroupDescription: Security group for DeadResult RDS instance
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+          Description: Lambda access to PostgreSQL
+      Tags:
+        - Key: Name
+          Value: !Sub deadresult-rds-sg-${Stage}
+
+  # ============================================
+  # RDS PostgreSQL (pgvector)
+  # ============================================
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnets for DeadResult RDS
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub deadresult-db-subnets-${Stage}
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub deadresult-${Stage}
+      DBInstanceClass: db.t4g.micro
+      Engine: postgres
+      EngineVersion: "16.4"
+      AllocatedStorage: 20
+      StorageType: gp3
+      DBName: deadresult
+      MasterUsername: deadresult
+      MasterUserPassword: !Ref DBPassword
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroup
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      PubliclyAccessible: false
+      BackupRetentionPeriod: !If [IsProduction, 7, 1]
+      DeletionProtection: !If [IsProduction, true, false]
+      Tags:
+        - Key: Name
+          Value: !Sub deadresult-db-${Stage}
+
+  # ============================================
+  # S3 Bucket — Bulk Exports
+  # ============================================
+  ExportBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub deadresult-exports-${Stage}
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldExports
+            Status: Enabled
+            ExpirationInDays: 30
+            Prefix: exports/
+      Tags:
+        - Key: Name
+          Value: !Sub deadresult-exports-${Stage}
+
+  # ============================================
+  # API Gateway REST API
+  # ============================================
+  DeadResultApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub deadresult-api-${Stage}
+      StageName: !Ref Stage
+      Cors:
+        AllowOrigin: "'*'"
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-API-Key'"
+
+  # ============================================
+  # Lambda Functions — Individual per endpoint
+  # ============================================
+
+  # --- GET /health ---
+  HealthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub deadresult-health-${Stage}
+      Handler: src/handlers/health.handler
+      CodeUri: ..
+      MemorySize: 256
+      Timeout: 5
+      Events:
+        GetHealth:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DeadResultApi
+            Path: /health
+            Method: GET
+
+  # --- POST /v1/experiments ---
+  SubmitFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub deadresult-submit-${Stage}
+      Handler: src/handlers/submit.handler
+      CodeUri: ..
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          DEADRESULT_DATABASE_URL_SYNC: !Sub
+            - "postgresql://deadresult:${Password}@${Host}:5432/deadresult"
+            - Password: !Ref DBPassword
+              Host: !GetAtt Database.Endpoint.Address
+      Policies:
+        - VPCAccessPolicy: {}
+      Events:
+        PostExperiment:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DeadResultApi
+            Path: /v1/experiments
+            Method: POST
+
+  # --- GET /v1/experiments/{id} ---
+  GetExperimentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub deadresult-get-experiment-${Stage}
+      Handler: src/handlers/get_experiment.handler
+      CodeUri: ..
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          DEADRESULT_DATABASE_URL_SYNC: !Sub
+            - "postgresql://deadresult:${Password}@${Host}:5432/deadresult"
+            - Password: !Ref DBPassword
+              Host: !GetAtt Database.Endpoint.Address
+      Policies:
+        - VPCAccessPolicy: {}
+      Events:
+        GetExperiment:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DeadResultApi
+            Path: /v1/experiments/{id}
+            Method: GET
+
+  # --- GET /v1/search ---
+  SearchFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub deadresult-search-${Stage}
+      Handler: src/handlers/search.handler
+      CodeUri: ..
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          DEADRESULT_DATABASE_URL_SYNC: !Sub
+            - "postgresql://deadresult:${Password}@${Host}:5432/deadresult"
+            - Password: !Ref DBPassword
+              Host: !GetAtt Database.Endpoint.Address
+      Policies:
+        - VPCAccessPolicy: {}
+      Events:
+        SearchExperiments:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DeadResultApi
+            Path: /v1/search
+            Method: GET
+
+  # --- GET /v1/similar/{id} ---
+  SimilarFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub deadresult-similar-${Stage}
+      Handler: src/handlers/similar.handler
+      CodeUri: ..
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          DEADRESULT_DATABASE_URL_SYNC: !Sub
+            - "postgresql://deadresult:${Password}@${Host}:5432/deadresult"
+            - Password: !Ref DBPassword
+              Host: !GetAtt Database.Endpoint.Address
+      Policies:
+        - VPCAccessPolicy: {}
+      Events:
+        FindSimilar:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DeadResultApi
+            Path: /v1/similar/{id}
+            Method: GET
+
+  # --- GET /v1/stats ---
+  StatsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub deadresult-stats-${Stage}
+      Handler: src/handlers/stats.handler
+      CodeUri: ..
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          DEADRESULT_DATABASE_URL_SYNC: !Sub
+            - "postgresql://deadresult:${Password}@${Host}:5432/deadresult"
+            - Password: !Ref DBPassword
+              Host: !GetAtt Database.Endpoint.Address
+      Policies:
+        - VPCAccessPolicy: {}
+      Events:
+        GetStats:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DeadResultApi
+            Path: /v1/stats
+            Method: GET
+
+  # --- POST /v1/export ---
+  ExportRequestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub deadresult-export-request-${Stage}
+      Handler: src/handlers/export_request.handler
+      CodeUri: ..
+      Timeout: 60
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          DEADRESULT_DATABASE_URL_SYNC: !Sub
+            - "postgresql://deadresult:${Password}@${Host}:5432/deadresult"
+            - Password: !Ref DBPassword
+              Host: !GetAtt Database.Endpoint.Address
+          DEADRESULT_S3_BUCKET: !Ref ExportBucket
+          DEADRESULT_AWS_REGION: !Ref AWS::Region
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref ExportBucket
+        - VPCAccessPolicy: {}
+      Events:
+        RequestExport:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DeadResultApi
+            Path: /v1/export
+            Method: POST
+
+  # --- GET /v1/export/latest ---
+  ExportLatestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub deadresult-export-latest-${Stage}
+      Handler: src/handlers/export_latest.handler
+      CodeUri: ..
+      Environment:
+        Variables:
+          DEADRESULT_S3_BUCKET: !Ref ExportBucket
+          DEADRESULT_AWS_REGION: !Ref AWS::Region
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref ExportBucket
+      Events:
+        GetLatestExport:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DeadResultApi
+            Path: /v1/export/latest
+            Method: GET
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint URL
+    Value: !Sub "https://${DeadResultApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
+  DatabaseEndpoint:
+    Description: RDS endpoint address
+    Value: !GetAtt Database.Endpoint.Address
+  ExportBucketName:
+    Description: S3 bucket for bulk exports
+    Value: !Ref ExportBucket
+  HealthFunctionArn:
+    Description: Health check Lambda ARN
+    Value: !GetAtt HealthFunction.Arn
+  SubmitFunctionArn:
+    Description: Submit experiment Lambda ARN
+    Value: !GetAtt SubmitFunction.Arn
+  SearchFunctionArn:
+    Description: Search Lambda ARN
+    Value: !GetAtt SearchFunction.Arn
