@@ -173,18 +173,97 @@ async with DeadResultPlugin(base_url="https://deadresult.agentpier.org") as plug
         })
 ```
 
+### Bulk export
+
+```bash
+# Request a full catalog export (triggers S3 dump)
+curl -X POST http://localhost:8000/v1/export/request \
+  -H "Content-Type: application/json" \
+  -d '{"email": "you@example.com"}'
+
+# Get presigned URL for the latest export
+curl http://localhost:8000/v1/export/latest
+```
+
+## AWS Deployment
+
+DeadResult deploys to AWS Lambda (via Mangum) + RDS PostgreSQL + API Gateway using AWS SAM.
+
+### Prerequisites
+
+- [AWS CLI](https://aws.amazon.com/cli/) configured with credentials
+- [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)
+- An ACM certificate in us-east-1 for `deadresult.agentpier.org` (optional, for custom domain)
+
+### First deploy
+
+```bash
+# Set your RDS password
+export DB_PASSWORD="your-secure-password-here"
+
+# Deploy (first time — interactive guided setup)
+./deploy.sh
+```
+
+The guided deploy will prompt for stack name, region, and parameter overrides. Key parameters:
+
+| Parameter | Description |
+|---|---|
+| `Stage` | `dev` or `prod` |
+| `DBPassword` | RDS master password |
+| `CertificateArn` | ACM cert ARN (optional — enables custom domain) |
+| `DomainName` | Custom domain (default: `deadresult.agentpier.org`) |
+
+### Subsequent deploys
+
+```bash
+export DB_PASSWORD="your-password"
+./deploy.sh
+```
+
+### What gets created
+
+- **Lambda** — Python 3.12, 512MB, 30s timeout, Mangum handler wrapping FastAPI
+- **API Gateway** — HTTP API with proxy integration
+- **RDS** — PostgreSQL 16 (db.t3.micro, 20GB) with pgvector in a private VPC
+- **S3** — Bucket for bulk catalog exports (30-day lifecycle)
+- **VPC** — Private subnets for Lambda/RDS, NAT gateway for outbound access
+- **Custom domain** (optional) — API Gateway domain mapping for `deadresult.agentpier.org`
+
+### pgvector setup
+
+After the first deploy, connect to the RDS instance and enable pgvector:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+The Alembic migration (`001_initial.py`) includes this, so `deploy.sh` handles it automatically via `alembic upgrade head`.
+
+### Architecture
+
+```
+Client → API Gateway HTTP API → Lambda (Mangum + FastAPI)
+                                    ↓
+                               RDS PostgreSQL (pgvector)
+                                    ↑
+                               S3 (bulk exports)
+```
+
 ## Project Structure
 
 ```
 deadresult/
-  api/           — FastAPI application and route handlers
+  api/           — FastAPI application, routes, and Lambda handler
   models/        — SQLAlchemy ORM models (Experiment)
   schemas/       — Pydantic request/response schemas
-  services/      — Business logic (search, similarity, submission, stats)
+  services/      — Business logic (search, similarity, submission, stats, export)
   plugin/        — Autoresearch integration plugin
   cli/           — Click-based CLI tool
 migrations/      — Alembic database migrations
 tests/           — pytest test suite
+template.yaml    — AWS SAM template
+deploy.sh        — Deployment script
 docker-compose.yml
 pyproject.toml
 ```
@@ -209,6 +288,8 @@ All settings via environment variables with `DEADRESULT_` prefix:
 | `DEADRESULT_API_HOST` | `0.0.0.0` | API bind host |
 | `DEADRESULT_API_PORT` | `8000` | API bind port |
 | `DEADRESULT_EMBEDDING_DIM` | `384` | Embedding vector dimension |
+| `DEADRESULT_S3_BUCKET` | `""` | S3 bucket name for bulk exports |
+| `DEADRESULT_AWS_REGION` | `us-east-1` | AWS region |
 
 ## License
 

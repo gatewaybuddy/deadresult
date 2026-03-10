@@ -50,7 +50,11 @@ async def search_experiments(
 
     if q:
         like_pat = f"%{q}%"
-        text_filter = Experiment.hypothesis.ilike(like_pat) | Experiment.notes.ilike(like_pat)
+        text_filter = or_(
+            Experiment.hypothesis.ilike(like_pat),
+            Experiment.notes.ilike(like_pat),
+            cast(Experiment.approach, String).ilike(like_pat),
+        )
         query = query.where(text_filter)
         count_query = count_query.where(text_filter)
 

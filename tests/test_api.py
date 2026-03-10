@@ -100,6 +100,57 @@ async def test_search_by_query(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_search_by_query_matches_notes(client: AsyncClient) -> None:
+    """Text search should match the notes field."""
+    await client.post("/v1/experiments", json=SAMPLE_EXPERIMENT)
+    await client.post("/v1/experiments", json=SAMPLE_EXPERIMENT_2)
+
+    # SAMPLE_EXPERIMENT has notes="Convergence 3x slower than baseline."
+    resp = await client.get("/v1/search", params={"q": "3x slower"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert "slower" in data["matches"][0]["experiment"]["notes"].lower()
+
+
+@pytest.mark.asyncio
+async def test_search_by_query_matches_approach(client: AsyncClient) -> None:
+    """Text search should match inside the approach JSONB field."""
+    await client.post("/v1/experiments", json=SAMPLE_EXPERIMENT)
+    await client.post("/v1/experiments", json=SAMPLE_EXPERIMENT_2)
+
+    # SAMPLE_EXPERIMENT_2 has approach.training_approach="cosine_annealing"
+    resp = await client.get("/v1/search", params={"q": "cosine_annealing"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["matches"][0]["experiment"]["architecture"] == "vision_transformer"
+
+
+@pytest.mark.asyncio
+async def test_search_by_query_case_insensitive(client: AsyncClient) -> None:
+    """Text search should be case-insensitive."""
+    await client.post("/v1/experiments", json=SAMPLE_EXPERIMENT)
+
+    resp = await client.get("/v1/search", params={"q": "ROTARY"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_search_by_query_no_match(client: AsyncClient) -> None:
+    """Text search should return empty for non-matching terms."""
+    await client.post("/v1/experiments", json=SAMPLE_EXPERIMENT)
+
+    resp = await client.get("/v1/search", params={"q": "quantum_entanglement_xyz"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 0
+    assert data["matches"] == []
+
+
+@pytest.mark.asyncio
 async def test_search_by_dataset(client: AsyncClient) -> None:
     await client.post("/v1/experiments", json=SAMPLE_EXPERIMENT)
     await client.post("/v1/experiments", json=SAMPLE_EXPERIMENT_2)

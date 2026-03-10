@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     embedding_dim: int = 384  # all-MiniLM-L6-v2 dimension
     default_page_size: int = 20
     max_page_size: int = 100
+    s3_bucket: str = ""
+    aws_region: str = "us-east-1"
 
     model_config = {"env_prefix": "DEADRESULT_"}
 

@@ -127,3 +127,16 @@ class StatsResponse(BaseModel):
     top_failure_categories: list[FailureCategory]
     top_datasets: list[dict[str, Any]]
     top_architectures: list[dict[str, Any]]
+
+
+class ExportRequest(BaseModel):
+    email: str = Field(..., min_length=5)
+
+
+class ExportRequestResponse(BaseModel):
+    message: str
+
+
+class ExportLatestResponse(BaseModel):
+    url: str | None
+    message: str

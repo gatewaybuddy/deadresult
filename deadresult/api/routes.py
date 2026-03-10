@@ -10,11 +10,15 @@ from deadresult.schemas.experiment import (
     ExperimentCreate,
     ExperimentListResponse,
     ExperimentResponse,
+    ExportLatestResponse,
+    ExportRequest,
+    ExportRequestResponse,
     SearchResponse,
     SearchResult,
     StatsResponse,
 )
 from deadresult.services import experiments as svc
+from deadresult.services import export as export_svc
 
 router = APIRouter(prefix="/v1")
 
@@ -90,3 +94,19 @@ async def find_similar(
 async def get_stats(db: DB) -> StatsResponse:
     data = await svc.get_stats(db)
     return StatsResponse(**data)
+
+
+@router.post("/export/request", response_model=ExportRequestResponse, status_code=202)
+async def request_export(data: ExportRequest, db: DB) -> ExportRequestResponse:
+    await export_svc.export_catalog_to_s3(db)
+    return ExportRequestResponse(
+        message=f"Export will be emailed to {data.email} when ready"
+    )
+
+
+@router.get("/export/latest", response_model=ExportLatestResponse)
+async def get_latest_export() -> ExportLatestResponse:
+    url = export_svc.get_latest_export_url()
+    if url is None:
+        return ExportLatestResponse(url=None, message="No exports available yet")
+    return ExportLatestResponse(url=url, message="Latest export ready")
